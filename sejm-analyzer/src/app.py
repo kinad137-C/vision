@@ -5,6 +5,7 @@ import streamlit as st
 from loguru import logger
 
 from src.analytics import Analytics
+from src.ml_analytics import PassPrediction, TopicModeling
 from src.repository import Repository
 
 st.set_page_config(page_title="Sejm Analyzer", page_icon="🏛️", layout="wide")
@@ -23,6 +24,7 @@ COLORS = {
 }
 
 TERMS_WITH_VOTING_DATA = {7, 8, 9, 10}
+TERMS_WITH_PROCESSES = {10}  # Only term 10 has processes synced
 
 
 def color(name: str) -> str:
@@ -58,11 +60,47 @@ def get_term_data(term_id: int):
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
+def get_processes_data(term_id: int):
+    """Get processes data for a term."""
+    repo = get_repository()
+    processes = repo.get_processes(term_id)
+    process_stats = repo.get_process_stats(term_id)
+    voting_links = repo.get_process_voting_links(term_id)
+    return {
+        "processes": processes,
+        "stats": process_stats,
+        "voting_links": voting_links,
+    }
+
+
+@st.cache_data(ttl=3600, show_spinner=False)
 def get_available_terms():
     """Get list of available terms from DB."""
     repo = get_repository()
     terms = repo.get_terms()
     return terms if terms else [10, 9, 8, 7]
+
+
+@st.cache_data(ttl=3600, show_spinner="Analyzing topics...")
+def get_topic_data(term_id: int):
+    """Get topic modeling results."""
+    repo = get_repository()
+    tm = TopicModeling(repo)
+    return tm.get_topic_stats(term_id)
+
+
+@st.cache_data(ttl=3600, show_spinner="Training model...")
+def get_prediction_model(term_id: int):
+    """Train and get prediction model stats."""
+    repo = get_repository()
+    pred = PassPrediction(repo)
+    pred.train(term_id)
+    eval_result = pred.evaluate(term_id)
+    model_stats = pred.get_model_stats()
+    return {
+        "evaluation": eval_result,
+        "model_stats": model_stats,
+    }
 
 
 def pie_chart(power: list) -> go.Figure:
@@ -122,6 +160,38 @@ def agreement_heatmap(matrix: dict) -> go.Figure:
     ).update_layout(title="Party Agreement Matrix", height=max(400, len(parties) * 40))
 
 
+def legislation_pie(stats: dict) -> go.Figure:
+    """Pie chart for legislation outcomes."""
+    labels = ["Passed", "Rejected"]
+    values = [stats.get("passed", 0), stats.get("rejected", 0)]
+    colors = ["#22C55E", "#EF4444"]
+
+    return go.Figure(go.Pie(labels=labels, values=values, marker=dict(colors=colors), hole=0.4)).update_layout(
+        title="Legislative Outcomes", height=350
+    )
+
+
+def legislation_by_type(stats: dict) -> go.Figure:
+    """Bar chart for legislation by type."""
+    by_type = stats.get("by_type", [])
+    if not by_type:
+        return None
+
+    types = [t["type"][:30] for t in by_type]
+    total = [t["total"] for t in by_type]
+    passed = [t["passed"] for t in by_type]
+
+    fig = go.Figure(
+        [
+            go.Bar(name="Total", x=types, y=total, marker_color="#94A3B8"),
+            go.Bar(name="Passed", x=types, y=passed, marker_color="#22C55E"),
+        ]
+    )
+    return fig.update_layout(barmode="group", title="Legislation by Type", height=400)
+
+
+# ========== MAIN APP ==========
+
 st.title("🏛️ Sejm Analyzer")
 st.caption("Parliamentary voting analysis • Data cached in database")
 
@@ -138,25 +208,32 @@ if st.sidebar.button("🔄 Refresh Data"):
 st.sidebar.markdown("---")
 st.sidebar.markdown("**Data Coverage**")
 for t in available_terms[:6]:
-    icon = "✅" if t in TERMS_WITH_VOTING_DATA else "⚠️"
-    st.sidebar.caption(f"{icon} Term {t}")
+    v_icon = "✅" if t in TERMS_WITH_VOTING_DATA else "⚠️"
+    p_icon = "📜" if t in TERMS_WITH_PROCESSES else ""
+    st.sidebar.caption(f"{v_icon} Term {t} {p_icon}")
 
 data = get_term_data(term_id)
 power = data["power"]
 has_voting = data["has_voting_data"]
+has_processes = term_id in TERMS_WITH_PROCESSES
 
 if not power:
     st.error(f"❌ No data for term {term_id}. Run: `python sync_data.py {term_id}`")
     st.stop()
 
-tab1, tab2, tab3, tab4 = st.tabs(["🏛️ Parliament", "⚡ Power", "🤝 Cohesion", "📊 Agreement"])
+# Create tabs - add Legislation, Topics, and Prediction tabs
+tabs = ["🏛️ Parliament", "⚡ Power", "🤝 Cohesion", "📊 Agreement"]
+if has_processes:
+    tabs.extend(["📜 Legislation", "🏷️ Topics", "🔮 Prediction"])
 
-with tab1:
+tab_objects = st.tabs(tabs)
+
+with tab_objects[0]:
     st.header("Parliament Composition")
 
     col1, col2 = st.columns([2, 1])
     with col1:
-        st.plotly_chart(pie_chart(power), width="stretch")
+        st.plotly_chart(pie_chart(power), use_container_width=True)
 
     with col2:
         st.subheader("Seat Distribution")
@@ -173,7 +250,7 @@ with tab1:
             opposition = total - largest.seats
             st.caption(f"Opposition: {opposition} seats (need {quota})")
 
-with tab2:
+with tab_objects[1]:
     st.header("Voting Power Analysis")
     st.markdown(
         """
@@ -184,7 +261,7 @@ with tab2:
     """
     )
 
-    st.plotly_chart(power_bars(power), width="stretch")
+    st.plotly_chart(power_bars(power), use_container_width=True)
 
     st.subheader("Possible Coalitions")
     coalitions = data["coalitions"]
@@ -202,7 +279,7 @@ with tab2:
     else:
         st.caption("No minimal winning coalitions found")
 
-with tab3:
+with tab_objects[2]:
     st.header("Party Cohesion")
 
     if not has_voting:
@@ -219,11 +296,11 @@ with tab3:
 
         coh = data["cohesion"]
         if coh:
-            st.plotly_chart(cohesion_bars(coh), width="stretch")
+            st.plotly_chart(cohesion_bars(coh), use_container_width=True)
         else:
             st.caption("No cohesion data available")
 
-with tab4:
+with tab_objects[3]:
     st.header("Party Agreement Matrix")
 
     if not has_voting:
@@ -233,6 +310,190 @@ with tab4:
 
         matrix = data["agreement"]
         if matrix and len(matrix) > 1:
-            st.plotly_chart(agreement_heatmap(matrix), width="stretch")
+            st.plotly_chart(agreement_heatmap(matrix), use_container_width=True)
         else:
             st.caption("Not enough data to compute agreement matrix")
+
+# Legislation tab (only for terms with processes)
+if has_processes and len(tab_objects) > 4:
+    with tab_objects[4]:
+        st.header("📜 Legislative Processes")
+
+        proc_data = get_processes_data(term_id)
+        stats = proc_data["stats"]
+        processes = proc_data["processes"]
+        voting_links = proc_data["voting_links"]
+
+        # Stats row
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Total Processes", stats.get("total", 0))
+        col2.metric("✅ Passed", stats.get("passed", 0))
+        col3.metric("❌ Rejected", stats.get("rejected", 0))
+        col4.metric("🔗 Voting Links", len(voting_links))
+
+        st.markdown("---")
+
+        # Charts
+        col1, col2 = st.columns(2)
+        with col1:
+            st.plotly_chart(legislation_pie(stats), use_container_width=True)
+
+        with col2:
+            type_chart = legislation_by_type(stats)
+            if type_chart:
+                st.plotly_chart(type_chart, use_container_width=True)
+
+        # Recent legislation
+        st.subheader("Recent Legislation")
+
+        filter_type = st.selectbox(
+            "Filter by type",
+            ["All", "projekt ustawy", "projekt uchwały", "wniosek", "informacja rządowa"],
+        )
+
+        filter_status = st.radio("Status", ["All", "Passed", "Rejected"], horizontal=True)
+
+        filtered = processes
+        if filter_type != "All":
+            filtered = [p for p in filtered if p.get("document_type") == filter_type]
+        if filter_status == "Passed":
+            filtered = [p for p in filtered if p.get("passed") is True]
+        elif filter_status == "Rejected":
+            filtered = [p for p in filtered if p.get("passed") is False]
+
+        st.caption(f"Showing {len(filtered)} of {len(processes)} processes")
+
+        for p in filtered[:20]:
+            status = "✅" if p.get("passed") else "❌"
+            title = p.get("title", "")[:80]
+            doc_type = p.get("document_type", "")
+            st.write(f"{status} **#{p.get('number')}** {title}... *({doc_type})*")
+
+# Topics tab
+if has_processes and len(tab_objects) > 5:
+    with tab_objects[5]:
+        st.header("🏷️ Topic Analysis")
+        st.markdown(
+            """
+        Automatic topic detection from legislative titles using keyword patterns.
+        Topics are extracted using regex matching on Polish legal terminology.
+        """
+        )
+
+        topic_data = get_topic_data(term_id)
+        clusters = topic_data["clusters"]
+
+        st.metric("Topics Detected", topic_data["total_topics"])
+
+        st.markdown("---")
+
+        # Topic pass rates chart
+        if clusters:
+            sorted_clusters = sorted(clusters, key=lambda x: -x["pass_rate"])
+
+            fig = go.Figure(
+                go.Bar(
+                    y=[c["name"] for c in sorted_clusters],
+                    x=[c["pass_rate"] for c in sorted_clusters],
+                    orientation="h",
+                    marker_color=[
+                        "#22C55E" if c["pass_rate"] >= 70 else "#F59E0B" if c["pass_rate"] >= 50 else "#EF4444"
+                        for c in sorted_clusters
+                    ],
+                    text=[f"{c['pass_rate']:.0f}% ({c['count']})" for c in sorted_clusters],
+                    textposition="outside",
+                )
+            )
+            fig.update_layout(
+                title="Pass Rate by Topic",
+                height=max(400, len(clusters) * 30),
+                xaxis={"range": [0, 105], "title": "Pass Rate %"},
+                yaxis={"title": ""},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Topic details
+        st.subheader("Topic Details")
+        for c in sorted(clusters, key=lambda x: -x["count"]):
+            with st.expander(f"**{c['name']}** — {c['count']} processes ({c['pass_rate']:.0f}% pass)"):
+                st.write(f"**Keywords:** {', '.join(c['keywords'])}")
+
+# Prediction tab
+if has_processes and len(tab_objects) > 6:
+    with tab_objects[6]:
+        st.header("🔮 Prediction Model")
+        st.markdown(
+            """
+        **Logistic Regression** model trained on historical legislative outcomes.
+
+        Features used:
+        - Document type (one-hot encoded)
+        - Topic category
+        - Historical pass rates for similar processes
+        """
+        )
+
+        pred_data = get_prediction_model(term_id)
+        evaluation = pred_data["evaluation"]
+        model_stats = pred_data["model_stats"]
+
+        # Metrics
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("Accuracy", f"{evaluation['accuracy']:.1%}")
+        col2.metric("Precision", f"{evaluation['precision']:.1%}")
+        col3.metric("Recall", f"{evaluation['recall']:.1%}")
+        col4.metric("F1 Score", f"{evaluation['f1_score']:.1%}")
+
+        st.markdown("---")
+
+        # Confusion matrix
+        st.subheader("Confusion Matrix")
+        cm = evaluation["confusion_matrix"]
+        col1, col2 = st.columns(2)
+        with col1:
+            st.success(f"✅ True Positive: {cm['true_positive']}")
+            st.error(f"❌ False Negative: {cm['false_negative']}")
+        with col2:
+            st.warning(f"⚠️ False Positive: {cm['false_positive']}")
+            st.info(f"✅ True Negative: {cm['true_negative']}")
+
+        st.caption(f"Total samples: {evaluation['total_samples']}")
+
+        st.markdown("---")
+
+        # Feature importance
+        st.subheader("Feature Importance")
+        importance = model_stats.get("feature_importance", [])[:12]
+
+        if importance:
+            fig = go.Figure(
+                go.Bar(
+                    y=[f[0] for f in reversed(importance)],
+                    x=[f[1] for f in reversed(importance)],
+                    orientation="h",
+                    marker_color="#3B82F6",
+                )
+            )
+            fig.update_layout(
+                title="Top Features (by absolute weight)",
+                height=max(300, len(importance) * 30),
+                xaxis={"title": "Importance"},
+            )
+            st.plotly_chart(fig, use_container_width=True)
+
+        # Base rates
+        st.subheader("Historical Pass Rates")
+        base_rates = model_stats.get("base_rates", {})
+        doc_rates = {k: v for k, v in base_rates.items() if not k.startswith("topic_")}
+        topic_rates = {k.replace("topic_", ""): v for k, v in base_rates.items() if k.startswith("topic_")}
+
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**By Document Type:**")
+            for dt, rate in sorted(doc_rates.items(), key=lambda x: -x[1]):
+                bar_width = int(rate * 100)
+                st.write(f"{dt}: {rate:.0%}")
+        with col2:
+            st.write("**By Topic:**")
+            for topic, rate in sorted(topic_rates.items(), key=lambda x: -x[1])[:10]:
+                st.write(f"{topic}: {rate:.0%}")

@@ -224,6 +224,44 @@ class Repository:
 
         return self._cached(f"voting_process_{term_id}", fetch)
 
+    def get_process_stats(self, term_id: int) -> dict:
+        """Get aggregate statistics for processes."""
+
+        def fetch():
+            # Basic stats
+            basic = self._db.execute(
+                """
+                SELECT
+                    COUNT(*) as total,
+                    SUM(CASE WHEN passed = true THEN 1 ELSE 0 END) as passed,
+                    SUM(CASE WHEN passed = false THEN 1 ELSE 0 END) as rejected
+                FROM process WHERE term_id = ?
+            """,
+                [term_id],
+            ).fetchone()
+
+            # By document type
+            by_type = self._db.execute(
+                """
+                SELECT document_type,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN passed THEN 1 ELSE 0 END) as passed
+                FROM process WHERE term_id = ?
+                GROUP BY document_type
+                ORDER BY COUNT(*) DESC
+            """,
+                [term_id],
+            ).fetchall()
+
+            return {
+                "total": basic[0] or 0,
+                "passed": basic[1] or 0,
+                "rejected": basic[2] or 0,
+                "by_type": [{"type": r[0], "total": r[1], "passed": r[2]} for r in by_type],
+            }
+
+        return self._cached(f"process_stats_{term_id}", fetch)
+
     # ========== Analytics cache ==========
 
     def get_analytics_cache(self, term_id: int, key: str) -> dict | None:
