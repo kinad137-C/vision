@@ -1,5 +1,7 @@
 """Logging configuration."""
+
 import sys
+
 from loguru import logger
 
 from src.settings import LOG_DIR
@@ -8,14 +10,14 @@ from src.settings import LOG_DIR
 def setup_logging(level: str = "INFO", to_file: bool = True):
     """Configure logging with console and optional file output."""
     logger.remove()
-    
+
     logger.add(
         sys.stderr,
         format="<green>{time:HH:mm:ss}</green> | <level>{level: <7}</level> | <level>{message}</level>",
         level=level,
         colorize=True,
     )
-    
+
     if to_file:
         LOG_DIR.mkdir(exist_ok=True)
         logger.add(
@@ -27,5 +29,5 @@ def setup_logging(level: str = "INFO", to_file: bool = True):
             compression="gz",
         )
         logger.info(f"Logging to {LOG_DIR}")
-    
+
     return logger

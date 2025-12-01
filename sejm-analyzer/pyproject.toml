@@ -11,12 +11,15 @@ dependencies = [
     "polars>=0.19.0",
     "loguru>=0.7.0",
     "tenacity>=8.2.0",
+    "pydantic>=2.0.0",
 ]
 
 [project.optional-dependencies]
 dev = [
     "pytest>=7.4.0",
     "pytest-asyncio>=0.21.0",
+    "ruff>=0.1.0",
+    "pre-commit>=3.5.0",
 ]
 
 [tool.setuptools]
@@ -25,3 +28,51 @@ packages = ["src"]
 [build-system]
 requires = ["setuptools>=68.0"]
 build-backend = "setuptools.build_meta"
+
+# ========== RUFF ==========
+[tool.ruff]
+target-version = "py311"
+line-length = 120
+exclude = [
+    ".git",
+    ".venv",
+    "__pycache__",
+    "*.egg-info",
+    ".ruff_cache",
+]
+
+[tool.ruff.lint]
+select = [
+    "E",      # pycodestyle errors
+    "W",      # pycodestyle warnings
+    "F",      # pyflakes
+    "I",      # isort
+    "B",      # flake8-bugbear
+    "C4",     # flake8-comprehensions
+    "UP",     # pyupgrade
+    "ARG",    # flake8-unused-arguments
+    "SIM",    # flake8-simplify
+]
+ignore = [
+    "E501",   # line too long (handled by formatter)
+    "B008",   # do not perform function calls in argument defaults
+    "B905",   # zip without strict
+    "ARG001", # unused function argument (often needed for API compatibility)
+    "W291",   # trailing whitespace (inside strings - can't autofix)
+    "W293",   # blank line contains whitespace (inside strings)
+    "C408",   # unnecessary dict() call (plotly uses this style)
+]
+
+[tool.ruff.lint.isort]
+known-first-party = ["src"]
+
+[tool.ruff.format]
+quote-style = "double"
+indent-style = "space"
+skip-magic-trailing-comma = false
+line-ending = "auto"
+
+# ========== PYTEST ==========
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

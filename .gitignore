@@ -54,3 +54,5 @@ htmlcov/
 # External scrapers (not our code)
 sejm_scraper-main/
 
+# wikifile
+*api.sejm.gov.pl
