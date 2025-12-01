@@ -1,0 +1,56 @@
+# Virtual environments
+.venv/
+venv/
+env/
+.virtualenvs/
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyc
+
+# Distribution / packaging
+*.egg-info/
+*.egg
+dist/
+build/
+eggs/
+.eggs/
+
+# Logs
+logs/
+*.log
+
+# Database files
+*.duckdb
+*.duckdb.wal
+
+# IDE
+.idea/
+.vscode/
+.cursor/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Environment variables
+.env
+.env.local
+
+# Test / Coverage
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+
+# Misc
+*.bak
+*.tmp
+
+# External scrapers (not our code)
+sejm_scraper-main/
+
