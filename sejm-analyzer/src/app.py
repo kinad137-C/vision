@@ -24,33 +24,29 @@ def color(name: str) -> str:
 @st.cache_resource
 def get_analytics():
     """Single Analytics instance for the app lifetime."""
-    logger.info("Initializing Analytics (one-time)")
-    return Analytics()
+    logger.info("Initializing Analytics")
+    return Analytics(Repository())
 
 
 @st.cache_resource
 def get_repository():
     """Single Repository instance for the app lifetime."""
-    logger.info("Initializing Repository (one-time)")
+    logger.info("Initializing Repository")
     return Repository()
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
-def precompute_term(term_id: int):
-    """Precompute all analytics for a term (cached 1 hour)."""
-    logger.info(f"Precomputing analytics for term {term_id}...")
+def get_term_data(term_id: int):
+    """Get analytics for a term (from DB cache or compute)."""
     analytics = get_analytics()
     
-    result = {
+    return {
         "power": analytics.power_indices(term_id),
         "coalitions": analytics.coalitions(term_id),
         "cohesion": analytics.cohesion(term_id),
         "agreement": analytics.agreement_matrix(term_id),
         "has_voting_data": term_id in TERMS_WITH_VOTING_DATA,
     }
-    
-    logger.info(f"Term {term_id} precomputed: {len(result['power'])} parties")
-    return result
 
 
 @st.cache_data(ttl=3600, show_spinner=False)
@@ -59,20 +55,6 @@ def get_available_terms():
     repo = get_repository()
     terms = repo.get_terms()
     return terms if terms else [10, 9, 8, 7]
-
-
-def warmup_cache():
-    """Precompute data for main terms on startup."""
-    terms = get_available_terms()
-    for term in terms[:4]:
-        if term in TERMS_WITH_VOTING_DATA:
-            precompute_term(term)
-
-
-if "warmed_up" not in st.session_state:
-    with st.spinner("🔄 Loading analytics data..."):
-        warmup_cache()
-    st.session_state.warmed_up = True
 
 
 def pie_chart(power: list) -> go.Figure:
@@ -116,7 +98,7 @@ def agreement_heatmap(matrix: dict) -> go.Figure:
 
 
 st.title("🏛️ Sejm Analyzer")
-st.caption("Static analytical dashboard • Data precomputed for fast loading")
+st.caption("Parliamentary voting analysis • Data cached in database")
 
 available_terms = get_available_terms()
 term_id = st.sidebar.selectbox("📅 Select Term", available_terms, index=0)
@@ -126,7 +108,6 @@ if term_id not in TERMS_WITH_VOTING_DATA:
 
 if st.sidebar.button("🔄 Refresh Data"):
     st.cache_data.clear()
-    st.session_state.warmed_up = False
     st.rerun()
 
 st.sidebar.markdown("---")
@@ -135,7 +116,7 @@ for t in available_terms[:6]:
     icon = "✅" if t in TERMS_WITH_VOTING_DATA else "⚠️"
     st.sidebar.caption(f"{icon} Term {t}")
 
-data = precompute_term(term_id)
+data = get_term_data(term_id)
 power = data["power"]
 has_voting = data["has_voting_data"]
 

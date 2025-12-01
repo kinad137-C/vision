@@ -1,6 +1,6 @@
 """Analytics - single entry point for all calculations."""
 from collections import defaultdict
-from dataclasses import dataclass
+from dataclasses import dataclass, asdict
 
 from loguru import logger
 
@@ -25,103 +25,148 @@ class Cohesion:
 
 
 class Analytics:
-    """All analytics via single interface."""
+    """All analytics via single interface with DB caching."""
     
     def __init__(self, repo: Repository = None):
         self._repo = repo or Repository()
         logger.debug("Analytics initialized")
     
+    def _get_cached_or_compute(self, term_id: int, key: str, compute_fn):
+        """Try DB cache first, compute and save if missing."""
+        cached = self._repo.get_analytics_cache(term_id, key)
+        if cached is not None:
+            return cached
+        
+        result = compute_fn()
+        self._repo.set_analytics_cache(term_id, key, result)
+        return result
+    
     def power_indices(self, term_id: int) -> list[PowerIndex]:
         """Power indices for all parties."""
-        seats = self._repo.get_parties(term_id)
-        total = sum(seats.values())
+        def compute():
+            seats = self._repo.get_parties(term_id)
+            total = sum(seats.values())
+            
+            if not total:
+                logger.warning(f"No data for term {term_id}")
+                return []
+            
+            quota = total // 2 + 1
+            ss = formulas.shapley_shubik(seats, quota)
+            bz = formulas.banzhaf(seats, quota)
+            
+            logger.info(f"Computed power indices for {len(seats)} parties")
+            return [
+                asdict(PowerIndex(p, s, round(s / total * 100, 1), round(ss[p] * 100, 1), round(bz[p] * 100, 1)))
+                for p, s in seats.items()
+            ]
         
-        if not total:
-            logger.warning(f"No data for term {term_id}")
+        data = self._get_cached_or_compute(term_id, "power_indices", compute)
+        if not data:
             return []
         
-        quota = total // 2 + 1
-        ss = formulas.shapley_shubik(seats, quota)
-        bz = formulas.banzhaf(seats, quota)
-        
-        logger.info(f"Calculated power indices for {len(seats)} parties")
-        return sorted([
-            PowerIndex(p, s, round(s / total * 100, 1), round(ss[p] * 100, 1), round(bz[p] * 100, 1))
-            for p, s in seats.items()
-        ], key=lambda x: x.shapley, reverse=True)
+        result = [PowerIndex(**d) for d in data]
+        return sorted(result, key=lambda x: x.shapley, reverse=True)
     
     def cohesion(self, term_id: int) -> list[Cohesion]:
         """Rice index per party."""
-        by_party: dict[str, list] = defaultdict(list)
-        for d in self._repo.get_party_decisions(term_id):
-            by_party[d["party"]].append((d["yes"], d["no"]))
+        def compute():
+            by_party: dict[str, list] = defaultdict(list)
+            for d in self._repo.get_party_decisions(term_id):
+                by_party[d["party"]].append((d["yes"], d["no"]))
+            
+            logger.info(f"Computed cohesion for {len(by_party)} parties")
+            return [
+                asdict(Cohesion(p, round(formulas.average_rice(v), 3), len(v)))
+                for p, v in by_party.items()
+            ]
         
-        logger.info(f"Calculated cohesion for {len(by_party)} parties")
-        return sorted([
-            Cohesion(p, round(formulas.average_rice(v), 3), len(v))
-            for p, v in by_party.items()
-        ], key=lambda x: x.rice_index, reverse=True)
+        data = self._get_cached_or_compute(term_id, "cohesion", compute)
+        if not data:
+            return []
+        
+        result = [Cohesion(**d) for d in data]
+        return sorted(result, key=lambda x: x.rice_index, reverse=True)
     
     def markov(self, term_id: int) -> list[dict]:
         """Markov transitions per party."""
-        sequences = self._repo.get_vote_sequences(term_id)
+        def compute():
+            sequences = self._repo.get_vote_sequences(term_id)
+            
+            result = []
+            for p, seq in sequences.items():
+                if len(seq) < 10:
+                    continue
+                trans = formulas.transition_matrix(seq)
+                result.append({
+                    "party": p,
+                    "momentum": round(formulas.momentum(trans), 3),
+                    "volatility": round(formulas.volatility(trans), 3),
+                })
+            
+            logger.info(f"Computed Markov for {len(result)} parties")
+            return result
         
-        result = []
-        for p, seq in sequences.items():
-            if len(seq) < 10:
-                continue
-            trans = formulas.transition_matrix(seq)
-            result.append({
-                "party": p,
-                "momentum": round(formulas.momentum(trans), 3),
-                "volatility": round(formulas.volatility(trans), 3),
-            })
-        
-        logger.info(f"Calculated Markov for {len(result)} parties")
-        return sorted(result, key=lambda x: x["momentum"], reverse=True)
+        return self._get_cached_or_compute(term_id, "markov", compute)
     
     def coalitions(self, term_id: int) -> list[dict]:
         """Minimum winning coalitions."""
-        seats = self._repo.get_parties(term_id)
-        total = sum(seats.values())
+        def compute():
+            seats = self._repo.get_parties(term_id)
+            total = sum(seats.values())
+            
+            if not total:
+                return []
+            
+            result = [
+                {"parties": list(c[0]), "seats": c[1], "surplus": c[2]}
+                for c in formulas.min_coalitions(seats, total // 2 + 1)[:10]
+            ]
+            logger.info(f"Found {len(result)} coalitions")
+            return result
         
-        if not total:
-            return []
-        
-        result = [
-            {"parties": list(c[0]), "seats": c[1], "surplus": c[2]}
-            for c in formulas.min_coalitions(seats, total // 2 + 1)[:10]
-        ]
-        logger.info(f"Found {len(result)} coalitions")
-        return result
+        return self._get_cached_or_compute(term_id, "coalitions", compute)
     
     def agreement_matrix(self, term_id: int) -> dict[str, dict[str, float]]:
         """Pairwise party agreement rates."""
-        parties = list(self._repo.get_parties(term_id).keys())
-        decisions = self._repo.get_party_decisions(term_id)
+        def compute():
+            parties = list(self._repo.get_parties(term_id).keys())
+            decisions = self._repo.get_party_decisions(term_id)
+            
+            by_voting: dict[str, dict[str, bool]] = defaultdict(dict)
+            for d in decisions:
+                by_voting[d["voting_id"]][d["party"]] = d["decision"] == "YES"
+            
+            voting_ids = list(by_voting.keys())
+            party_votes = {p: [by_voting[v].get(p) for v in voting_ids] for p in parties}
+            
+            result = {}
+            for p1 in parties:
+                result[p1] = {}
+                for p2 in parties:
+                    if p1 == p2:
+                        result[p1][p2] = 100.0
+                        continue
+                    
+                    both = [(a, b) for a, b in zip(party_votes[p1], party_votes[p2]) 
+                            if a is not None and b is not None]
+                    
+                    if both:
+                        result[p1][p2] = round(sum(a == b for a, b in both) / len(both) * 100, 1)
+                    else:
+                        result[p1][p2] = 0.0
+            
+            logger.info(f"Computed agreement matrix {len(parties)}x{len(parties)}")
+            return result
         
-        by_voting: dict[str, dict[str, bool]] = defaultdict(dict)
-        for d in decisions:
-            by_voting[d["voting_id"]][d["party"]] = d["decision"] == "YES"
-        
-        voting_ids = list(by_voting.keys())
-        party_votes = {p: [by_voting[v].get(p) for v in voting_ids] for p in parties}
-        
-        result = {}
-        for p1 in parties:
-            result[p1] = {}
-            for p2 in parties:
-                if p1 == p2:
-                    result[p1][p2] = 100.0
-                    continue
-                
-                both = [(a, b) for a, b in zip(party_votes[p1], party_votes[p2]) 
-                        if a is not None and b is not None]
-                
-                if both:
-                    result[p1][p2] = round(sum(a == b for a, b in both) / len(both) * 100, 1)
-                else:
-                    result[p1][p2] = 0.0
-        
-        logger.info(f"Calculated agreement matrix {len(parties)}x{len(parties)}")
-        return result
+        return self._get_cached_or_compute(term_id, "agreement_matrix", compute)
+    
+    def precompute_all(self, term_id: int):
+        """Precompute and cache all analytics for a term."""
+        logger.info(f"Precomputing all analytics for term {term_id}...")
+        self.power_indices(term_id)
+        self.cohesion(term_id)
+        self.markov(term_id)
+        self.coalitions(term_id)
+        self.agreement_matrix(term_id)
+        logger.info(f"All analytics cached for term {term_id}")

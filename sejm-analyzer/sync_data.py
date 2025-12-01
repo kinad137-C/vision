@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Sync data from Sejm API (incremental by default).
+Sync data from Sejm API and precompute analytics.
 
 Usage:
     python sync_data.py              # Sync current term (10)
@@ -8,14 +8,7 @@ Usage:
     python sync_data.py 10 9 8       # Sync specific terms
     python sync_data.py 10 --force   # Force re-download everything
     python sync_data.py --validate   # Check data integrity
-
-Throttling:
-    - 20 concurrent requests max
-    - 50ms delay between requests  
-    - 1s delay between batches
-    - Exponential backoff: 2s → 4s → 8s → 16s → 32s → 60s (max)
-
-Data is validated after each term sync.
+    python sync_data.py --recompute  # Recompute analytics only (no sync)
 """
 import sys
 import duckdb
@@ -23,8 +16,12 @@ import duckdb
 from src.logging_config import setup_logging
 from src.collector import sync_all, validate_term
 from src.settings import MAX_CONCURRENT, BATCH_SIZE, DB_PATH
+from src.db import Repository
+from src.analytics import Analytics
 
 logger = setup_logging(level="INFO", to_file=True)
+
+TERMS_WITH_VOTING_DATA = {7, 8, 9, 10}
 
 
 def run_validation():
@@ -63,16 +60,46 @@ def run_validation():
     return all_valid
 
 
+def precompute_analytics(terms: list[int] = None, force: bool = False):
+    """Precompute and cache analytics for terms."""
+    repo = Repository(read_only=False)
+    analytics = Analytics(repo)
+    
+    if terms is None:
+        terms = repo.get_terms()
+    
+    for term_id in terms:
+        if term_id not in TERMS_WITH_VOTING_DATA:
+            logger.info(f"Skipping term {term_id} (no voting data)")
+            continue
+        
+        if force:
+            repo.clear_analytics_cache(term_id)
+        
+        if repo.has_analytics_cache(term_id) and not force:
+            logger.info(f"Term {term_id}: analytics already cached")
+            continue
+        
+        analytics.precompute_all(term_id)
+    
+    logger.info("Analytics precomputation complete!")
+
+
 def main():
     args = sys.argv[1:]
     
-    # Validate mode
     if "--validate" in args or args == ["validate"]:
         run_validation()
         return
     
+    if "--recompute" in args:
+        force = "--force" in args or "-f" in args
+        logger.info("Recomputing analytics only...")
+        precompute_analytics(force=force)
+        return
+    
     force = "--force" in args or "-f" in args
-    args = [a for a in args if a not in ("--force", "-f", "--validate")]
+    args = [a for a in args if a not in ("--force", "-f", "--validate", "--recompute")]
     
     if not args:
         terms = [10]
@@ -93,9 +120,11 @@ def main():
     
     sync_all(terms=terms, max_concurrent=MAX_CONCURRENT, batch_size=BATCH_SIZE, force=force)
     
-    # Run validation after sync
     logger.info("Running validation...")
     run_validation()
+    
+    logger.info("Precomputing analytics...")
+    precompute_analytics(terms=terms, force=force)
 
 
 if __name__ == "__main__":

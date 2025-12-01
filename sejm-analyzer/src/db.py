@@ -1,6 +1,8 @@
 """Database: connection, schema, repository."""
+import json
 import threading
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 
 import duckdb
@@ -19,8 +21,12 @@ def db_exists() -> bool:
 def get_db(read_only: bool = True) -> duckdb.DuckDBPyConnection:
     """Get thread-local connection."""
     if not hasattr(_local, "conn") or _local.conn is None:
-        if read_only and not db_exists():
+        if not db_exists():
             logger.warning(f"DB not found: {DB_PATH}. Creating empty DB.")
+            conn = duckdb.connect(DB_PATH)
+            init_tables(conn)
+            conn.close()
+        else:
             conn = duckdb.connect(DB_PATH)
             init_tables(conn)
             conn.close()
@@ -78,6 +84,15 @@ def init_tables(conn: duckdb.DuckDBPyConnection):
             id VARCHAR PRIMARY KEY, voting_id VARCHAR, mp_id VARCHAR, club VARCHAR, vote VARCHAR
         )
     """)
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS analytics_cache (
+            term_id INTEGER NOT NULL,
+            key VARCHAR NOT NULL,
+            data JSON NOT NULL,
+            computed_at TIMESTAMP NOT NULL,
+            PRIMARY KEY (term_id, key)
+        )
+    """)
     conn.execute("CREATE INDEX IF NOT EXISTS idx_mp_term ON mp(term_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vote_voting ON vote(voting_id)")
     conn.execute("CREATE INDEX IF NOT EXISTS idx_vote_mp ON vote(mp_id)")
@@ -89,8 +104,9 @@ def init_tables(conn: duckdb.DuckDBPyConnection):
 class Repository:
     """All data access in one place."""
     
-    def __init__(self):
-        self._db = get_db()
+    def __init__(self, read_only: bool = True):
+        self._db = get_db(read_only)
+        self._read_only = read_only
         self._cache = {}
         logger.debug("Repository initialized")
     
@@ -99,7 +115,7 @@ class Repository:
         logger.debug("Repository cache cleared")
     
     def refresh(self):
-        self._db = reconnect_db()
+        self._db = reconnect_db(self._read_only)
         self.clear_cache()
         logger.info("Repository refreshed")
     
@@ -173,3 +189,47 @@ class Repository:
             logger.debug(f"get_vote_sequences({term_id}): {len(result)} parties")
             return dict(result)
         return self._cached(f"sequences_{term_id}", fetch)
+
+    # Analytics cache methods
+    def get_analytics_cache(self, term_id: int, key: str) -> dict | None:
+        """Load precomputed analytics from DB."""
+        row = self._db.execute("""
+            SELECT data FROM analytics_cache WHERE term_id = ? AND key = ?
+        """, [term_id, key]).fetchone()
+        if row:
+            logger.debug(f"Analytics cache hit: term={term_id}, key={key}")
+            return json.loads(row[0])
+        return None
+    
+    def set_analytics_cache(self, term_id: int, key: str, data: dict):
+        """Save precomputed analytics to DB."""
+        if self._read_only:
+            logger.warning("Cannot write analytics cache in read-only mode")
+            return
+        
+        json_data = json.dumps(data)
+        self._db.execute("""
+            INSERT OR REPLACE INTO analytics_cache (term_id, key, data, computed_at)
+            VALUES (?, ?, ?, ?)
+        """, [term_id, key, json_data, datetime.utcnow()])
+        logger.debug(f"Analytics cache saved: term={term_id}, key={key}")
+    
+    def clear_analytics_cache(self, term_id: int = None):
+        """Clear analytics cache for a term or all."""
+        if self._read_only:
+            logger.warning("Cannot clear analytics cache in read-only mode")
+            return
+        
+        if term_id:
+            self._db.execute("DELETE FROM analytics_cache WHERE term_id = ?", [term_id])
+            logger.info(f"Analytics cache cleared for term {term_id}")
+        else:
+            self._db.execute("DELETE FROM analytics_cache")
+            logger.info("All analytics cache cleared")
+    
+    def has_analytics_cache(self, term_id: int) -> bool:
+        """Check if term has precomputed analytics."""
+        row = self._db.execute("""
+            SELECT COUNT(*) FROM analytics_cache WHERE term_id = ?
+        """, [term_id]).fetchone()
+        return row[0] > 0
