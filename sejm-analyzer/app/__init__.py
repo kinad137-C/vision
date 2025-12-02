@@ -1,0 +1,1 @@
+"""Sejm Analyzer application package."""

@@ -2,6 +2,7 @@
 
 # Default directory
 APP_DIR = sejm-analyzer
+PACKAGES = app etl helpers sejm_client settings web tests
 
 # Install production dependencies
 install:
@@ -14,17 +15,17 @@ dev:
 
 # Lint with ruff
 lint:
-	cd $(APP_DIR) && ruff check src/ tests/
+	cd $(APP_DIR) && ruff check $(PACKAGES)
 
 # Format with ruff
 format:
-	cd $(APP_DIR) && ruff format src/ tests/
-	cd $(APP_DIR) && ruff check --fix src/ tests/
+	cd $(APP_DIR) && ruff format $(PACKAGES)
+	cd $(APP_DIR) && ruff check --fix $(PACKAGES)
 
 # Check (lint + format check, no changes)
 check:
-	cd $(APP_DIR) && ruff check src/ tests/
-	cd $(APP_DIR) && ruff format --check src/ tests/
+	cd $(APP_DIR) && ruff check $(PACKAGES)
+	cd $(APP_DIR) && ruff format --check $(PACKAGES)
 
 # Run tests
 test:
@@ -37,6 +38,10 @@ sync:
 # Sync all terms
 sync-all:
 	cd $(APP_DIR) && python sync_data.py all
+
+# Force sync all terms (re-download everything)
+sync-force:
+	cd $(APP_DIR) && python sync_data.py all --force
 
 # Run streamlit app
 run:

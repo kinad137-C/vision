@@ -1,6 +1,6 @@
 """Tests for formulas module."""
 
-from src import formulas
+from helpers import formulas
 
 
 class TestShapley:

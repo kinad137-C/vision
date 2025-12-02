@@ -12,31 +12,45 @@ Usage:
 """
 
 import sys
+from pathlib import Path
+
+# Add project to path
+sys.path.insert(0, str(Path(__file__).parent))
 
 import duckdb
 
-from src.analytics import Analytics
-from src.collector import sync_all, validate_term
-from src.logging_config import setup_logging
-from src.repository import Repository
-from src.settings import BATCH_SIZE, DB_PATH, MAX_CONCURRENT
+from app.repositories import CacheRepository, MpRepository, VotingRepository
+from app.services.voting.analytics import VotingAnalytics
+from etl import sync_all
+from etl.validation import validate_term
+from settings import BATCH_SIZE, DB_PATH, MAX_CONCURRENT
+from settings.logging import setup_logging
 
 logger = setup_logging(level="INFO", to_file=True)
 
-TERMS_WITH_VOTING_DATA = {7, 8, 9, 10}
 
-
-def run_validation():
-    """Validate all terms in database."""
+def run_validation(terms: list[int] | None = None):
+    """Validate terms in database."""
     conn = duckdb.connect(DB_PATH, read_only=True)
-    terms = [r[0] for r in conn.execute("SELECT id FROM term ORDER BY id DESC").fetchall()]
+
+    if terms:
+        # Validate only specified terms
+        all_terms = terms
+    else:
+        # Get terms that actually have data (MPs > 0)
+        all_terms = [r[0] for r in conn.execute("SELECT DISTINCT term_id FROM mp ORDER BY term_id DESC").fetchall()]
+
+    if not all_terms:
+        print("\n⚠️  No synced data found. Run 'python sync_data.py' first.\n")
+        conn.close()
+        return True
 
     print("\n" + "=" * 60)
     print("DATA VALIDATION REPORT")
     print("=" * 60)
 
     all_valid = True
-    for term in terms:
+    for term in all_terms:
         result = validate_term(conn, term)
         status = "✅" if result["valid"] else "❌"
         print(f"\nTerm {term} {status}")
@@ -62,24 +76,30 @@ def run_validation():
     return all_valid
 
 
-def precompute_analytics(terms: list[int] = None, force: bool = False):
+def precompute_analytics(terms: list[int] | None = None, force: bool = False):
     """Precompute and cache analytics for terms."""
-    repo = Repository(read_only=False)
-    analytics = Analytics(repo)
+    mp_repo = MpRepository()
+    voting_repo = VotingRepository()
+    cache_repo = CacheRepository(read_only=False)
+    analytics = VotingAnalytics(voting_repo=voting_repo, mp_repo=mp_repo, cache_repo=cache_repo)
 
     if terms is None:
-        terms = repo.get_terms()
+        terms = mp_repo.get_terms()
+
+    # Get terms with voting data from DB
+    terms_data = mp_repo.get_terms_with_data()
+    terms_with_voting = terms_data["voting"]
 
     for term_id in terms:
-        if term_id not in TERMS_WITH_VOTING_DATA:
-            logger.info(f"Skipping term {term_id} (no voting data)")
+        if term_id not in terms_with_voting:
+            logger.info("Skipping term {} (no voting data)", term_id)
             continue
 
         if force:
-            repo.clear_analytics_cache(term_id)
+            cache_repo.clear(term_id)
 
-        if repo.has_analytics_cache(term_id) and not force:
-            logger.info(f"Term {term_id}: analytics already cached")
+        if cache_repo.exists(term_id) and not force:
+            logger.info("Term {}: analytics already cached", term_id)
             continue
 
         analytics.precompute_all(term_id)
@@ -114,16 +134,16 @@ def main():
         if not terms:
             print(__doc__)
             sys.exit(1)
-        logger.info(f"Syncing terms: {terms}")
+        logger.info("Syncing terms: {}", terms)
 
     mode = "FORCE (re-download all)" if force else "INCREMENTAL (skip existing)"
-    logger.info(f"Mode: {mode}")
-    logger.info(f"Throttling: {MAX_CONCURRENT} concurrent, {BATCH_SIZE}/batch, exponential backoff 2-60s")
+    logger.info("Mode: {}", mode)
+    logger.info("Throttling: {} concurrent, {}/batch", MAX_CONCURRENT, BATCH_SIZE)
 
-    sync_all(terms=terms, max_concurrent=MAX_CONCURRENT, batch_size=BATCH_SIZE, force=force)
+    sync_all(terms=terms, batch_size=BATCH_SIZE, force=force)
 
     logger.info("Running validation...")
-    run_validation()
+    run_validation(terms=terms)
 
     logger.info("Precomputing analytics...")
     precompute_analytics(terms=terms, force=force)

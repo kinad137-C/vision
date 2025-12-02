@@ -12,6 +12,7 @@ dependencies = [
     "loguru>=0.7.0",
     "tenacity>=8.2.0",
     "pydantic>=2.0.0",
+    "numpy>=1.24.0",
 ]
 
 [project.optional-dependencies]
@@ -23,7 +24,10 @@ dev = [
 ]
 
 [tool.setuptools]
-packages = ["src"]
+packages = ["app", "etl", "helpers", "sejm_client", "settings", "web"]
+
+[tool.setuptools.package-dir]
+"" = "."
 
 [build-system]
 requires = ["setuptools>=68.0"]
@@ -55,16 +59,19 @@ select = [
 ]
 ignore = [
     "E501",   # line too long (handled by formatter)
+    "E402",   # module level import not at top (needed for sys.path manipulation)
     "B008",   # do not perform function calls in argument defaults
     "B905",   # zip without strict
     "ARG001", # unused function argument (often needed for API compatibility)
     "W291",   # trailing whitespace (inside strings - can't autofix)
     "W293",   # blank line contains whitespace (inside strings)
     "C408",   # unnecessary dict() call (plotly uses this style)
+    "UP007",  # Optional[X] vs X | None (pydantic models readability)
+    "UP038",  # isinstance tuple vs X | Y
 ]
 
 [tool.ruff.lint.isort]
-known-first-party = ["src"]
+known-first-party = ["app", "etl", "helpers", "sejm_client", "settings", "web"]
 
 [tool.ruff.format]
 quote-style = "double"
